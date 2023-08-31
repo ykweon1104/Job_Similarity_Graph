@@ -1,0 +1,845 @@
+---
+title: "Final version"
+output: pdf_document
+date: "2023-07-24"
+---
+
+```{r setup, include=FALSE}
+
+library(stringr)
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+
+```
+
+```{r cars}
+
+
+# Read the data
+data <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/ONET_EVBSC_Map_Offline_kn.csv")
+experience <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_experience.csv")
+jobType <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_JobType.csv")
+
+# Filter the data based on Full Transferability
+filtered_data <- subset(data, Full.Transferability >= 0.973183355)
+
+# Get all unique job types from the jobType data
+all_job_types <- unique(jobType$Job_type)
+
+# Get all unique occupations from filtered data, jobType, and experience
+all_occupations <- unique(c(filtered_data$Occ1, filtered_data$Occ2, jobType$Occupation, experience$Occupation))
+
+# Define the desired order of experience levels
+experience_levels <- c("Junior", "Intermediate", "Mid-level_NON STEM", "Mid-level_STEM", "Senior-level")
+
+# Create nodes dataframe with x and y coordinates
+nodes <- data.frame(
+  name = all_occupations,
+  x = factor(jobType$Job_type[match(all_occupations, jobType$Occupation)], levels = all_job_types),
+  y = factor(experience$Strata.Level[match(all_occupations, experience$Occupation)], levels = experience_levels)
+)
+
+# Remove rows with missing x or y values
+nodes <- nodes[complete.cases(nodes$x, nodes$y), ]
+
+# Remove rows with identical Occupation1 and Occupation2
+filtered_data <- filtered_data[!(filtered_data$Occ1 == filtered_data$Occ2), ]
+
+gg <- ggplot(nodes, aes(x = x, y = y, text = paste0("Selected Jobs: ", name))) +
+  geom_jitter(width = 0.2, height = 0.2, size = 1, color = "steelblue") +
+  labs(x = "Job Type", y = "Experience Level") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  coord_cartesian(clip = "off") +
+  theme(plot.margin = margin(20, 20, 20, 20))
+
+# capture jitter data
+df3 <- data.frame(x = p$x$data[[1]]$x, y = p$x$data[[1]]$y, 
+                  nm = nodes$name, x1 = nodes$x, y1 = nodes$y)
+
+# create a simulation of jobs that match
+nodes3 <- lapply(1:nrow(nodes), function(k) {
+  thisOne <- nodes$name[k]
+  mtch <- nodes$name[
+    grep(pattern = paste0("^", substr(thisOne, 1, 1)), nodes$name)]
+  mtch <- mtch[!mtch %in% thisOne]
+  if(length(mtch) < 1) {
+    data.frame(occ1 = character(), occ2 = character(),        # if no matches
+               x = factor(), y = factor())
+  } else {
+    data.frame(occ1 = rep(thisOne, length(mtch)), occ2 = mtch, # if matches
+               x = nodes$x[k], y = nodes$y[k])
+  }
+  }) %>% bind_rows()
+
+
+cdt = list() 
+
+invisible(lapply(1:nrow(df3), function(j) {
+  dt <- df3[j, ]                          # point the lines will originate from
+  mtch <- nodes3 %>% 
+    filter(x == dt$x1, y == dt$y1, occ1 == dt$nm) %>%  # matching occ2
+    select(occ2) %>% unlist(use.names = F)
+  nodes4 <- df3[df3$nm %in% mtch, ]       # extract matched x, y positions
+  if(nrow(nodes4) < 1) {
+    p <<- p %>%                           # create trace so indices remain correct!
+      add_lines(x = rep(df3[j, ]$x, 2), y = rep(df3[j, ]$y, 2), visible = F)                      # create lines
+    return()                              # if no similar occupations
+  }
+  # create segment vectors for x and y
+  xs <- lapply(1:nrow(nodes4), function(m) {c(dt$x, nodes4[m, ]$x, NA)}) %>% unlist()
+  ys <- lapply(1:nrow(nodes4), function(m) {c(dt$y, nodes4[m, ]$y, NA)}) %>% unlist()
+  
+  # get row numbers of connected data
+  vect <- which(df3$x %in% nodes4$x & df3$y %in% nodes4$y)
+  cdt[[j]] <<- vect - 1 # 0 ind in JS, so subtract one from every value
+  p <<- p %>% 
+    add_lines(x = xs, y = ys, visible = F)                # create lines
+}))
+p
+
+p$x$data[[1]]$customdata <- cdt   # add vectors to plot (used for 2nd option)
+
+#------- Option 1 from update: -------
+# hover to show lines, click to remove lines
+
+p %>% htmlwidgets::onRender(     
+  "function(el, x) {
+    giveMe = Array();
+    el.on('plotly_hover', function(p) {  /* when hovering add lines */
+      tellMe = p.points[0].pointIndex;   /* capture scatter index for curve number */
+      giveMe.push(tellMe + 1);
+      Plotly.restyle(el, {'visible': true}, giveMe);
+    })
+    el.on('plotly_doubleclick', function(p) { /* when unhovering remove lines */
+      Plotly.restyle(el, {'visible': false}, giveMe);
+      giveMe = [];       /* clear list after changing to visible  = F */
+    })
+  }")
+
+#------- Option 2 from update: -------
+# hover/unhover to show/hide lines; click show tooltips
+
+p %>% htmlwidgets::onRender(
+  "function(el, x) {
+    nms = ['curveNumber', 'pointNumber'];
+    el.on('plotly_hover', function(p) {     /* when hovering add lines */
+      tellMe = p.points[0].pointIndex;     /* capture scatter index for curve number */
+      Plotly.restyle(el, {'visible': true}, [tellMe + 1]);
+    })
+    el.on('plotly_unhover', function(p) {   /* when unhovering remove lines */
+      Plotly.restyle(el, {'visible': false}, [tellMe + 1]);
+    })
+    el.on('plotly_click', function(p) {
+      var giveMe = p.points[0].customdata; /* get point's array of customdata */
+      if(giveMe.length < 1) return;
+      if(!Array.isArray(giveMe)) giveMe = [giveMe];
+      giveMe.push(tellMe);                 /* add current pointIndex to list */
+      hvr = [];                            /* clear array for curve & point list*/
+      for(ea in giveMe) {                  /* create list for hovering */ 
+        var oj = {}; oj[nms[0]] = 0; 
+        oj[nms[1]] = giveMe[ea]; 
+        hvr.push(oj);
+      } 
+      Plotly.Fx.hover(el, hvr);            /* show tooltips for points */
+    })
+  }")
+
+
+nodes3 <- lapply(1:nrow(nodes), function(k) {
+  thisOne <- nodes$name[k]
+  mtch <- nodes$name[
+    grep(pattern = paste0("^", substr(thisOne, 1, 1)), nodes$name)]
+  mtch <- mtch[!mtch %in% thisOne]
+  if(length(mtch) < 1) {
+    data.frame(occ1 = character(), occ2 = character(),        # if no matches
+               x = factor(), y = factor())
+  } else {
+    data.frame(occ1 = rep(thisOne, length(mtch)), occ2 = mtch, # if matches
+               x = nodes$x[k], y = nodes$y[k])
+  }
+  }) %>% bind_rows()
+
+```
+
+
+
+
+
+```{r}
+
+# Read the data
+data <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/ONET_EVBSC_Map_Offline_kn.csv")
+experience <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_experience.csv")
+jobType <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_JobType.csv")
+
+# Filter the data based on Full Transferability
+filtered_data <- subset(data, Full.Transferability >= 0.973183355)
+
+# Get all unique job types from the jobType data
+all_job_types <- unique(jobType$Job_type)
+
+# Get all unique occupations from filtered data, jobType, and experience
+all_occupations <- unique(c(filtered_data$Occ1, filtered_data$Occ2, jobType$Occupation, experience$Occupation))
+
+# Define the desired order of experience levels
+experience_levels <- c("Junior", "Intermediate", "Mid-level_NON STEM", "Mid-level_STEM", "Senior-level")
+
+# Create nodes dataframe with x and y coordinates
+nodes <- data.frame(
+  name = all_occupations,
+  x = factor(jobType$Job_type[match(all_occupations, jobType$Occupation)], levels = all_job_types),
+  y = factor(experience$Strata.Level[match(all_occupations, experience$Occupation)], levels = experience_levels)
+)
+
+# Remove rows with missing x or y values
+nodes <- nodes[complete.cases(nodes$x, nodes$y), ]
+
+# Remove rows with identical Occupation1 and Occupation2
+filtered_data <- filtered_data[!(filtered_data$Occ1 == filtered_data$Occ2), ]
+
+gg <- ggplot(nodes, aes(x = x, y = y, text = paste0("Selected Jobs: ", name))) +
+  geom_jitter(width = 0.2, height = 0.2, size = 1, color = "steelblue") +
+  labs(x = "Job Type", y = "Experience Level") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  coord_cartesian(clip = "off") +
+  theme(plot.margin = margin(20, 20, 20, 20))
+
+p <- ggplotly(gg) %>% config(doubleClickDelay = 1000) 
+
+# capture jitter data
+df3 <- data.frame(x = p$x$data[[1]]$x, y = p$x$data[[1]]$y, 
+                  nm = nodes$name, x1 = nodes$x, y1 = nodes$y)
+
+
+ xx <- lapply(1:nrow(filtered_data), function(j) { filter(nodes, nodes$name == filtered_data[j, ]$Occ1) %>% select(x, y)}) %>% bind_rows(); fd2 <- cbind(filtered_data, xx) %>% as.data.frame()
+
+fd2 <- cbind(filtered_data, xx) %>% as.data.frame()
+
+# create a simulation of jobs that match
+invisible(lapply(1:nrow(df3), function(j) {
+  dt <- df3[j, ]                          # point the lines will originate from
+  mtch <- fd2 %>% 
+    filter(x == dt$x1, y == dt$y1, Occ1 == dt$nm) %>%  # matching occ2
+    select(Occ2) %>% unlist(use.names = F)
+  nodes4 <- df3[df3$nm %in% mtch, ]       # extract matched x, y positions
+  if(nrow(nodes4) < 1) {
+    p <<- p %>%                           # create trace so indices remain correct!
+      add_lines(x = rep(df3[j, ]$x, 2), y = rep(df3[j, ]$y, 2), visible = F)                      # create lines
+    return()                              # if no similar occupations
+  }
+  # create segment vectors for x and y
+  xs <- lapply(1:nrow(nodes4), function(m) {c(dt$x, nodes4[m, ]$x, NA)}) %>% unlist()
+  ys <- lapply(1:nrow(nodes4), function(m) {c(dt$y, nodes4[m, ]$y, NA)}) %>% unlist()
+  
+  # get row numbers of connected data
+  vect <- which(df3$x %in% nodes4$x & df3$y %in% nodes4$y)
+  cdt[[j]] <<- vect - 1 # 0 ind in JS, so subtract one from every value
+  p <<- p %>% 
+    add_lines(x = xs, y = ys, visible = F)                # create lines
+}))
+
+p
+
+
+p %>% htmlwidgets::onRender(
+  "function(el, x) {
+    nms = ['curveNumber', 'pointNumber'];
+    coll = [];                                      /* for persistent tooltip */
+    giveMe = [];                                 /* for connected data points */
+    oArr = el.data[0];                 /* the x, y data for the scatter trace */
+    redu = function(val, arr) {                 /* closest data point in array*/
+      return arr.reduce((these, those) => {
+        return Math.abs(those - val) < Math.abs(these - val) ? those : these;
+      });
+    }
+    closest = function(xval, yval) { /* p.xvals/yvals from pt data; arr is x/y data obj */
+      /* id nearest x and nearest y, make sure they match, if no match, take larger index */
+      xpt = redu(xval, oArr.x);           /* get closest data point for x axis*/
+      ypt = redu(yval, oArr.y);           /* get closest data point for y axis*/
+      xi = oArr.x.indexOf(xpt);           /* get index value for x data point */
+      yi = oArr.x.indexOf(ypt);           /* get index value for x data point */
+      return xi > yi ? xi : yi;          /* if the indices != return larger # */
+    }
+    el.on('plotly_hover', function(p) {
+      pt = p;                                   /* global: for use in unhover */
+    })
+    el.on('plotly_unhover', function(p) {       /* create persistent tooltips */
+      if(coll.length > 0){           /* if click occurred else no persistence */
+        if(giveMe.length < 1) return;   /* are there lines connecting points? */
+        if(!Array.isArray(giveMe)) giveMe = [giveMe]; /* make sure its an array */
+        whatNow = closest(pt.xvals[0], pt.yvals[0]);  /* mouse on connected point? */
+        if(giveMe.includes(whatNow)) {    /* if hover pointIndex is connected */
+          coll[1] = whatNow;         /* add connected point to array for tips */
+          hvr = [];                     /* clear array for curve & point list */
+          for(ea in coll) {                       /* create list for hovering */ 
+            var oj = {}; oj[nms[0]] = 0; 
+            oj[nms[1]] = coll[ea]; 
+            hvr.push(oj);
+          }
+        } else {
+          hvr = [{'curveNumber': 0, 'pointNumber': coll[0]}]; /* if coll, create tooltip */
+        }
+        Plotly.Fx.hover(el, hvr);                      /* persistent tooltips */
+      } 
+    })
+    el.on('plotly_click', function(p) {     /* create persistent lines upon click */
+                                          /* if any lines already vis-- hide them */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      giveIt = p.points[0].pointIndex;  /* capture scatter index for curve number */
+      if(p.points[0].customdata) {
+        giveMe = p.points[0].customdata;       /* get point's array of customdata */
+      } else {giveMe = []}
+      coll[0] = giveIt;                   /* collect index for persistent tooltip */
+      Plotly.restyle(el, {'visible': true}, [giveIt + 1]);
+    })
+    el.on('plotly_doubleclick', function(p) { /* remove lines & pers tooltips */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      coll = [];      /* reset arrays, until next double click */
+      giveMe = [];
+    }) 
+  }")
+
+```
+
+
+Add colours
+```{r}
+
+# Read the data
+data <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/ONET_EVBSC_Map_Offline_kn.csv")
+experience <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_experience.csv")
+jobType <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_JobType.csv")
+
+# Filter the data based on Full Transferability
+filtered_data <- subset(data, Full.Transferability >= 0.973183355)
+
+# Get all unique job types from the jobType data
+all_job_types <- unique(jobType$Job_type)
+
+# Get all unique occupations from filtered data, jobType, and experience
+all_occupations <- unique(c(filtered_data$Occ1, filtered_data$Occ2, jobType$Occupation, experience$Occupation))
+
+# Define the desired order of experience levels
+experience_levels <- c("Junior", "Intermediate", "Mid-level_NON STEM", "Mid-level_STEM", "Senior-level")
+
+# Create nodes dataframe with x and y coordinates
+nodes <- data.frame(
+  name = all_occupations,
+  x = factor(jobType$Job_type[match(all_occupations, jobType$Occupation)], levels = all_job_types),
+  y = factor(experience$Strata.Level[match(all_occupations, experience$Occupation)], levels = experience_levels)
+)
+
+# Remove rows with missing x or y values
+nodes <- nodes[complete.cases(nodes$x, nodes$y), ]
+
+# Remove rows with identical Occupation1 and Occupation2
+filtered_data <- filtered_data[!(filtered_data$Occ1 == filtered_data$Occ2), ]
+
+# Define a custom color scale with 20 different yellowish colors from light to dark based on experience levels
+num_colors <- 20
+yellow_colors <- scales::seq_gradient_pal("#FFFFCC", "#FF6600", space = "Lab")(seq(0, 1, length.out = num_colors))
+
+gg <- ggplot(nodes, aes(x = x, y = y, text = paste0("Selected Jobs: ", name))) +
+  geom_jitter(width = 0.2, height = 0.2, size = 1, color = "steelblue") +
+  labs(x = "Job Type", y = "Experience Level") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  coord_cartesian(clip = "off") +
+  theme(plot.margin = margin(20, 20, 20, 20)) +
+  scale_color_manual(values = yellow_colors) 
+
+# Convert ggplot to plotly
+p <- ggplotly(gg) %>% config(doubleClickDelay = 1000)
+
+# Assign colors to x and y axes
+unique_combinations <- unique(interaction(nodes$x, nodes$y))
+num_combinations <- length(unique_combinations)
+x_axis_colors <- yellow_colors[seq(1, num_colors, length.out = num_combinations)]
+
+# Repeat the x_axis_colors to match the number of y axis categories
+y_axis_colors <- rep(x_axis_colors, each = length(yellow_colors) / num_combinations)
+
+# Set background color for both x and y axes
+p$x$layout$plot_bgcolor <- x_axis_colors
+p$x$layout$yaxis$gridcolor <- y_axis_colors
+
+# Show the plot
+p
+# capture jitter data
+df3 <- data.frame(x = p$x$data[[1]]$x, y = p$x$data[[1]]$y, 
+                  nm = nodes$name, x1 = nodes$x, y1 = nodes$y)
+
+
+ xx <- lapply(1:nrow(filtered_data), function(j) { filter(nodes, nodes$name == filtered_data[j, ]$Occ1) %>% select(x, y)}) %>% bind_rows(); fd2 <- cbind(filtered_data, xx) %>% as.data.frame()
+
+fd2 <- cbind(filtered_data, xx) %>% as.data.frame()
+
+# create a simulation of jobs that match
+invisible(lapply(1:nrow(df3), function(j) {
+  dt <- df3[j, ]                          # point the lines will originate from
+  mtch <- fd2 %>% 
+    filter(x == dt$x1, y == dt$y1, Occ1 == dt$nm) %>%  # matching occ2
+    select(Occ2) %>% unlist(use.names = F)
+  nodes4 <- df3[df3$nm %in% mtch, ]       # extract matched x, y positions
+  if(nrow(nodes4) < 1) {
+    p <<- p %>%                           # create trace so indices remain correct
+      add_lines(x = rep(df3[j, ]$x, 2), y = rep(df3[j, ]$y, 2), visible = F)    # create lines
+    return()                              # if no similar occupations
+  }
+  # create segment vectors for x and y
+  xs <- lapply(1:nrow(nodes4), function(m) {c(dt$x, nodes4[m, ]$x, NA)}) %>% unlist()
+  ys <- lapply(1:nrow(nodes4), function(m) {c(dt$y, nodes4[m, ]$y, NA)}) %>% unlist()
+  
+  # get row numbers of connected data
+  vect <- which(df3$x %in% nodes4$x & df3$y %in% nodes4$y)
+  cdt[[j]] <<- vect - 1 # 0 ind in JS, so subtract one from every value
+  p <<- p %>% 
+    add_lines(x = xs, y = ys, visible = F)                # create lines
+}))
+
+
+p %>% htmlwidgets::onRender(
+  "function(el, x) {
+    nms = ['curveNumber', 'pointNumber'];
+    coll = [];                                      /* for persistent tooltip */
+    giveMe = [];                                 /* for connected data points */
+    oArr = el.data[0];                 /* the x, y data for the scatter trace */
+    redu = function(val, arr) {                 /* closest data point in array*/
+      return arr.reduce((these, those) => {
+        return Math.abs(those - val) < Math.abs(these - val) ? those : these;
+      });
+    }
+    closest = function(xval, yval) { /* p.xvals/yvals from pt data; arr is x/y data obj */
+      /* id nearest x and nearest y, make sure they match, if no match, take larger index */
+      xpt = redu(xval, oArr.x);           /* get closest data point for x axis*/
+      ypt = redu(yval, oArr.y);           /* get closest data point for y axis*/
+      xi = oArr.x.indexOf(xpt);           /* get index value for x data point */
+      yi = oArr.x.indexOf(ypt);           /* get index value for x data point */
+      return xi > yi ? xi : yi;          /* if the indices != return larger # */
+    }
+    el.on('plotly_hover', function(p) {
+      pt = p;                                   /* global: for use in unhover */
+    })
+    el.on('plotly_unhover', function(p) {       /* create persistent tooltips */
+      if(coll.length > 0){           /* if click occurred else no persistence */
+        if(giveMe.length < 1) return;   /* are there lines connecting points? */
+        if(!Array.isArray(giveMe)) giveMe = [giveMe]; /* make sure its an array */
+        whatNow = closest(pt.xvals[0], pt.yvals[0]);  /* mouse on connected point? */
+        if(giveMe.includes(whatNow)) {    /* if hover pointIndex is connected */
+          coll[1] = whatNow;         /* add connected point to array for tips */
+          hvr = [];                     /* clear array for curve & point list */
+          for(ea in coll) {                       /* create list for hovering */ 
+            var oj = {}; oj[nms[0]] = 0; 
+            oj[nms[1]] = coll[ea]; 
+            hvr.push(oj);
+          }
+        } else {
+          hvr = [{'curveNumber': 0, 'pointNumber': coll[0]}]; /* if coll, create tooltip */
+        }
+        Plotly.Fx.hover(el, hvr);                      /* persistent tooltips */
+      } 
+    })
+    el.on('plotly_click', function(p) {     /* create persistent lines upon click */
+                                          /* if any lines already vis-- hide them */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      giveIt = p.points[0].pointIndex;  /* capture scatter index for curve number */
+      if(p.points[0].customdata) {
+        giveMe = p.points[0].customdata;       /* get point's array of customdata */
+      } else {giveMe = []}
+      coll[0] = giveIt;                   /* collect index for persistent tooltip */
+      Plotly.restyle(el, {'visible': true}, [giveIt + 1]);
+    })
+    el.on('plotly_doubleclick', function(p) { /* remove lines & pers tooltips */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      coll = [];      /* reset arrays, until next double click */
+      giveMe = [];
+    }) 
+  }")
+
+```
+
+Add colours and final version with small sample size
+
+```{r}
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+
+# Read the data
+data <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/ONET_EVBSC_Map_Offline_kn.csv")
+experience <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_experience.csv")
+jobType <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_JobType.csv")
+
+# Filter the data based on Full Transferability
+filtered_data <- subset(data, Full.Transferability >= 0.95)
+
+# Get all unique job types from the jobType data
+all_job_types <- unique(jobType$Job_type)
+
+# Get all unique occupations from filtered data, jobType, and experience
+all_occupations <- unique(c(filtered_data$Occ1, filtered_data$Occ2, jobType$Occupation, experience$Occupation))
+
+# Define the desired order of experience levels
+experience_levels <- c("Junior", "Intermediate", "Mid-level_NON STEM", "Mid-level_STEM", "Senior-level")
+
+# Create nodes dataframe with x and y coordinates
+nodes <- data.frame(
+  name = all_occupations,
+  x = factor(jobType$Job_type[match(all_occupations, jobType$Occupation)], levels = all_job_types),
+  y = factor(experience$Strata.Level[match(all_occupations, experience$Occupation)], levels = experience_levels)
+)
+
+# Remove rows with missing x or y values
+nodes <- nodes[complete.cases(nodes$x, nodes$y), ]
+
+# Remove rows with identical Occupation1 and Occupation2
+filtered_data <- filtered_data[!(filtered_data$Occ1 == filtered_data$Occ2), ]
+
+# Create a new data frame for the background
+background_data <- expand.grid(x = levels(nodes$x), y = levels(nodes$y))
+background_data$color_group <- interaction(background_data$x, background_data$y)
+
+# Define colors vector
+
+colors <- c("#D7FFA3", "#D2FF9D", "#CEFF97", "#C9FF91", "#C4FF8C", "#BFFF86", "#BAFF80", "#B5FF7B", "#B0FF75", "#ABFF6F", "#A6FF6A", "#A2FF64", "#9DFF5E", "#98FF58", "#93FF53", "#8EFF4D", "#89FF47", "#84FF41", "#80FF3C", "#7BFF36")
+
+
+# plot with geom_tile
+gg1 <- ggplot() +          # retained for panel data and rgb
+  geom_tile(data = background_data, 
+            aes(x = x, y = y, fill = color_group), color = "white", alpha = .5) + 
+  geom_jitter(data = nodes, aes(x = x, y = y, text = name), 
+              width = 0.2, height = 0.2, size = 1, color = "black")+
+  guides(fill=FALSE) +
+  scale_fill_manual(values = colors)
+
+p1 <- ggplotly(gg1) # create plotly so that rgb's are calculated for you
+crgb <- invisible(lapply(1:length(p1$x$data), function(i) { # extract rgb (not hex)
+  p1$x$data[[i]]$fillcolor
+})) %>% unlist()
+
+# capture color assignments
+gco <- ggplot_build(gg1)$data[[1]][, 1:3] # fill, x, y
+
+# create background shapes for Plotly (instead of using geom_tile)
+shp <- lapply(1:nrow(background_data), function(k) {
+  list(type = "rect", fillcolor = crgb[k],      # in shapes you have to use rgb (why!?!??)
+       xref = "paper", yref = "paper", layer = "below",
+       opacity = .6, line = list(width = .001), # essentially, make line invisible
+       x0 = 1/length(unique(background_data$x)) * (gco[k, ]$x - 1), # using paper space
+       x1 = 1/length(unique(background_data$x)) * gco[k, ]$x,
+       y0 = 1/length(unique(background_data$y)) * (gco[k, ]$y - 1),
+       y1 = 1/length(unique(background_data$y)) * gco[k, ]$y)
+})
+
+gg <- ggplot(nodes, aes(x = x, y = y, text = paste0("Selected Jobs: ", name))) +
+  geom_jitter(width = 0.2, height = 0.2, size = 1, color = "black") +
+  labs(x = "Job Type", y = "Experience Level") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  coord_cartesian(clip = "off") +
+  theme(plot.margin = margin(20, 20, 20, 20)) +
+  scale_fill_manual(values = colors)
+ 
+  
+
+p <- ggplotly(gg) %>% config(doubleClickDelay = 1000)
+
+# capture jitter data once persistent
+df3 <- data.frame(x = p$x$data[[1]]$x, y = p$x$data[[1]]$y, 
+                  nm = nodes$name, x1 = nodes$x, y1 = nodes$y)
+
+xx <- lapply(1:nrow(filtered_data), function(j) {  # match jobs
+  filter(nodes, nodes$name == filtered_data[j, ]$Occ1) %>% 
+    select(x, y)
+  }) %>% bind_rows()
+fd2 <- cbind(filtered_data, xx) %>% as.data.frame() # create matched jobs list w/ coord
+
+cdt = list()  # for the customdata field
+
+# retain order of points in lines' traces; this creates lines' traces
+invisible(lapply(1:nrow(df3), function(j) {
+  dt <- df3[j, ]                          # point the lines will originate from
+  mtch <- fd2 %>% 
+    filter(x == dt$x1, y == dt$y1, Occ1 == dt$nm) %>%  # matching occ2
+    select(Occ2) %>% unlist(use.names = F)
+  nodes4 <- df3[df3$nm %in% mtch, ]       # extract matched x, y positions
+  if(nrow(nodes4) < 1) {
+    p <<- p %>%                           # create trace so indices remain correct!
+      add_lines(x = rep(df3[j, ]$x, 2), y = rep(df3[j, ]$y, 2), visible = F)                      # create lines
+    return()                              # if no similar occupations
+  }
+  # create segment vectors for x and y
+  xs <- lapply(1:nrow(nodes4), function(m) {c(dt$x, nodes4[m, ]$x, NA)}) %>% unlist()
+  ys <- lapply(1:nrow(nodes4), function(m) {c(dt$y, nodes4[m, ]$y, NA)}) %>% unlist()
+  
+  # get row numbers of connected data
+  vect <- which(df3$x %in% nodes4$x & df3$y %in% nodes4$y)
+  cdt[[j]] <<- vect - 1 # 0 ind in JS, so subtract one from every value
+  p <<- p %>% 
+    add_lines(x = xs, y = ys, visible = F)                # create lines
+}))
+
+p <- plotly_build(p)
+
+p$x$data[[1]]$customdata <- cdt   # add customdata vectors to plot
+
+p$x$layout$shapes = shp           # Add shapes
+                                 
+
+#Create function for lines
+p <- p %>% htmlwidgets::onRender(
+  "function(el, x) {
+    nms = ['curveNumber', 'pointNumber'];
+    coll = [];                                      /* for persistent tooltip */
+    giveMe = [];                                 /* for connected data points */
+    oArr = el.data[0];                 /* the x, y data for the scatter trace */
+    redu = function(val, arr) {                 /* closest data point in array*/
+      return arr.reduce((these, those) => {
+        return Math.abs(those - val) < Math.abs(these - val) ? those : these;
+      });
+    }
+    closest = function(xval, yval) { /* p.xvals/yvals from pt data; arr is x/y data obj */
+      /* id nearest x and nearest y, make sure they match, if no match, take larger index */
+      xpt = redu(xval, oArr.x);           /* get closest data point for x axis*/
+      ypt = redu(yval, oArr.y);           /* get closest data point for y axis*/
+      xi = oArr.x.indexOf(xpt);           /* get index value for x data point */
+      yi = oArr.x.indexOf(ypt);           /* get index value for x data point */
+      return xi > yi ? xi : yi;          /* if the indices != return larger # */
+    }
+    el.on('plotly_hover', function(p) {
+      pt = p;                                   /* global: for use in unhover */
+    })
+    el.on('plotly_unhover', function(p) {       /* create persistent tooltips */
+      if(coll.length > 0){           /* if click occurred else no persistence */
+        if(giveMe.length < 1) return;   /* are there lines connecting points? */
+        if(!Array.isArray(giveMe)) giveMe = [giveMe]; /* make sure its an array */
+        whatNow = closest(pt.xvals[0], pt.yvals[0]);  /* mouse on connected point? */
+        if(giveMe.includes(whatNow)) {    /* if hover pointIndex is connected */
+          coll[1] = whatNow;         /* add connected point to array for tips */
+          hvr = [];                     /* clear array for curve & point list */
+          for(ea in coll) {                       /* create list for hovering */ 
+            var oj = {}; oj[nms[0]] = 0; 
+            oj[nms[1]] = coll[ea]; 
+            hvr.push(oj);
+          }
+        } else {
+          hvr = [{'curveNumber': 0, 'pointNumber': coll[0]}]; /* if coll, create tooltip */
+        }
+        Plotly.Fx.hover(el, hvr);                      /* persistent tooltips */
+      } 
+    })
+    el.on('plotly_click', function(p) {     /* create persistent lines upon click */
+                                          /* if any lines already vis-- hide them */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      giveIt = p.points[0].pointIndex;  /* capture scatter index for curve number */
+      if(p.points[0].customdata) {
+        giveMe = p.points[0].customdata;       /* get point's array of customdata */
+      } else {giveMe = []}
+      coll[0] = giveIt;                   /* collect index for persistent tooltip */
+      Plotly.restyle(el, {'visible': true}, [giveIt + 1]);
+    })
+    el.on('plotly_doubleclick', function(p) { /* remove lines & pers tooltips */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      coll = [];      /* reset arrays, until next double click */
+      giveMe = [];
+    }) 
+  }")
+
+```
+
+Correct the algorithms
+
+```{r}
+library(ggplot2)
+library(plotly)
+library(tidyverse)
+
+# Read the data
+data <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/ONET_EVBSC_Map_Offline.csv")
+experience <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_experience.csv")
+jobType <- read.csv("C:/Users/ykweon/OneDrive - ECO Canada/Desktop/ESVC/EV Battery Supply Chain_JobType.csv")
+
+# Filter the data based on Full Transferability
+filtered_data <- subset(data, Full.Transferability >= 0.95)
+
+# Get all unique job types from the jobType data
+all_job_types <- unique(jobType$Job_type)
+
+# Get all unique occupations from filtered data, jobType, and experience
+all_occupations <- unique(c(filtered_data$Occ1, filtered_data$Occ2, jobType$Occupation, experience$Occupation))
+
+# Define the desired order of experience levels
+experience_levels <- c("Junior", "Intermediate", "Mid-level_NON STEM", "Mid-level_STEM", "Senior-level")
+
+# Create nodes dataframe with x and y coordinates
+nodes <- data.frame(
+  name = all_occupations,
+  x = factor(jobType$Job_type[match(all_occupations, jobType$Occupation)], levels = all_job_types),
+  y = factor(experience$Strata.Level[match(all_occupations, experience$Occupation)], levels = experience_levels)
+)
+
+# Remove rows with missing x or y values
+nodes <- nodes[complete.cases(nodes$x, nodes$y), ]
+
+# Remove rows with identical Occupation1 and Occupation2
+filtered_data <- filtered_data[!(filtered_data$Occ1 == filtered_data$Occ2), ]
+
+# Create a new data frame for the background
+background_data <- expand.grid(x = levels(nodes$x), y = levels(nodes$y))
+background_data$color_group <- interaction(background_data$x, background_data$y)
+
+# Define colors vector
+
+colors <- c("#D7FFA3", "#D2FF9D", "#CEFF97", "#C9FF91", "#C4FF8C", "#BFFF86", "#BAFF80", "#B5FF7B", "#B0FF75", "#ABFF6F", "#A6FF6A", "#A2FF64", "#9DFF5E", "#98FF58", "#93FF53", "#8EFF4D", "#89FF47", "#84FF41", "#80FF3C", "#7BFF36")
+
+
+# plot with geom_tile
+gg1 <- ggplot() +          # retained for panel data and rgb
+  geom_tile(data = background_data, 
+            aes(x = x, y = y, fill = color_group), color = "white", alpha = .5) + 
+  geom_jitter(data = nodes, aes(x = x, y = y, text = name), 
+              width = 0.2, height = 0.2, size = 1, color = "black")+
+  guides(fill=FALSE) +
+  scale_fill_manual(values = colors)
+
+p1 <- ggplotly(gg1) # create plotly so that rgb's are calculated for you
+crgb <- invisible(lapply(1:length(p1$x$data), function(i) { # extract rgb (not hex)
+  p1$x$data[[i]]$fillcolor
+})) %>% unlist()
+
+# capture color assignments
+gco <- ggplot_build(gg1)$data[[1]][, 1:3] # fill, x, y
+
+# create background shapes for Plotly (instead of using geom_tile)
+shp <- lapply(1:nrow(background_data), function(k) {
+  list(type = "rect", fillcolor = crgb[k],      # in shapes you have to use rgb (why!?!??)
+       xref = "paper", yref = "paper", layer = "below",
+       opacity = .6, line = list(width = .001), # essentially, make line invisible
+       x0 = 1/length(unique(background_data$x)) * (gco[k, ]$x - 1), # using paper space
+       x1 = 1/length(unique(background_data$x)) * gco[k, ]$x,
+       y0 = 1/length(unique(background_data$y)) * (gco[k, ]$y - 1),
+       y1 = 1/length(unique(background_data$y)) * gco[k, ]$y)
+})
+
+gg <- ggplot(nodes, aes(x = x, y = y, text = paste0("Selected Jobs: ", name))) +
+  geom_jitter(width = 0.2, height = 0.2, size = 1, color = "black") +
+  labs(x = "Job Type", y = "Experience Level") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  coord_cartesian(clip = "off") +
+  theme(plot.margin = margin(20, 20, 20, 20)) +
+  scale_fill_manual(values = colors)
+ 
+  
+
+p <- ggplotly(gg) %>% config(doubleClickDelay = 1000)
+
+# capture jitter data once persistent
+df3 <- data.frame(x = p$x$data[[1]]$x, y = p$x$data[[1]]$y, 
+                  nm = nodes$name, x1 = nodes$x, y1 = nodes$y)
+
+xx <- lapply(1:nrow(filtered_data), function(j) {  # match jobs
+  filter(nodes, nodes$name == filtered_data[j, ]$Occ1) %>% 
+    select(x, y)
+  }) %>% bind_rows()
+fd2 <- cbind(filtered_data, xx) %>% as.data.frame() # create matched jobs list w/ coord
+
+cdt = list()  # for the customdata field
+
+# retain order of points in lines' traces; this creates lines' traces
+invisible(lapply(1:nrow(df3), function(j) {
+  dt <- df3[j, ]                          # point the lines will originate from
+  mtch <- fd2 %>% 
+    filter(x == dt$x1, y == dt$y1, Occ1 == dt$nm) %>%  # matching occ2
+    select(Occ2) %>% unlist(use.names = F)
+  nodes4 <- df3[df3$nm %in% mtch, ]       # extract matched x, y positions
+  if(nrow(nodes4) < 1) {
+    p <<- p %>%                           # create trace so indices remain correct!
+      add_lines(x = rep(df3[j, ]$x, 2), y = rep(df3[j, ]$y, 2), visible = F)                      # create lines
+    return()                              # if no similar occupations
+  }
+  # create segment vectors for x and y
+  xs <- lapply(1:nrow(nodes4), function(m) {c(dt$x, nodes4[m, ]$x, NA)}) %>% unlist()
+  ys <- lapply(1:nrow(nodes4), function(m) {c(dt$y, nodes4[m, ]$y, NA)}) %>% unlist()
+  
+  # get row numbers of connected data
+  vect <- which(df3$x %in% nodes4$x & df3$y %in% nodes4$y)
+  cdt[[j]] <<- vect - 1 # 0 ind in JS, so subtract one from every value
+  p <<- p %>% 
+    add_lines(x = xs, y = ys, visible = F)                # create lines
+}))
+
+p <- plotly_build(p)
+
+p$x$data[[1]]$customdata <- cdt   # add customdata vectors to plot
+
+p$x$layout$shapes = shp           # Add shapes
+                                 
+
+#Create function for lines
+p <- p %>% htmlwidgets::onRender(
+  "function(el, x) {
+    nms = ['curveNumber', 'pointNumber'];
+    coll = [];                                      /* for persistent tooltip */
+    giveMe = [];                                 /* for connected data points */
+    oArr = el.data[0];                 /* the x, y data for the scatter trace */
+    redu = function(val, arr) {                 /* closest data point in array*/
+      return arr.reduce((these, those) => {
+        return Math.abs(those - val) < Math.abs(these - val) ? those : these;
+      });
+    }
+    closest = function(xval, yval) { /* p.xvals/yvals from pt data; arr is x/y data obj */
+      /* id nearest x and nearest y, make sure they match, if no match, take larger index */
+      xpt = redu(xval, oArr.x);           /* get closest data point for x axis*/
+      ypt = redu(yval, oArr.y);           /* get closest data point for y axis*/
+      xi = oArr.x.indexOf(xpt);           /* get index value for x data point */
+      yi = oArr.x.indexOf(ypt);           /* get index value for x data point */
+      return xi > yi ? xi : yi;          /* if the indices != return larger # */
+    }
+    el.on('plotly_hover', function(p) {
+      pt = p;                                   /* global: for use in unhover */
+    })
+    el.on('plotly_unhover', function(p) {       /* create persistent tooltips */
+      if(coll.length > 0){           /* if click occurred else no persistence */
+        if(giveMe.length < 1) return;   /* are there lines connecting points? */
+        if(!Array.isArray(giveMe)) giveMe = [giveMe]; /* make sure its an array */
+        whatNow = closest(pt.xvals[0], pt.yvals[0]);  /* mouse on connected point? */
+        if(giveMe.includes(whatNow)) {    /* if hover pointIndex is connected */
+          coll[1] = whatNow;         /* add connected point to array for tips */
+          hvr = [];                     /* clear array for curve & point list */
+          for(ea in coll) {                       /* create list for hovering */ 
+            var oj = {}; oj[nms[0]] = 0; 
+            oj[nms[1]] = coll[ea]; 
+            hvr.push(oj);
+          }
+        } else {
+          hvr = [{'curveNumber': 0, 'pointNumber': coll[0]}]; /* if coll, create tooltip */
+        }
+        Plotly.Fx.hover(el, hvr);                      /* persistent tooltips */
+      } 
+    })
+    el.on('plotly_click', function(p) {     /* create persistent lines upon click */
+                                          /* if any lines already vis-- hide them */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      giveIt = p.points[0].pointIndex;  /* capture scatter index for curve number */
+      if(p.points[0].customdata) {
+        giveMe = p.points[0].customdata;       /* get point's array of customdata */
+      } else {giveMe = []}
+      coll[0] = giveIt;                   /* collect index for persistent tooltip */
+      Plotly.restyle(el, {'visible': true}, [giveIt + 1]);
+    })
+    el.on('plotly_doubleclick', function(p) { /* remove lines & pers tooltips */
+      Plotly.restyle(el, {'visible': false}, pt.xaxes[0]._traceIndices.slice(1,));
+      coll = [];      /* reset arrays, until next double click */
+      giveMe = [];
+    }) 
+  }")
+
+```
+
+
+
